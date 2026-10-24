@@ -1,13 +1,13 @@
 # Factory Telemetry Simulator
 
+**Live demo:** <https://mjprall.github.io/factory-telemetry-sim/>
+
 [![tests](https://github.com/mjprall/factory-telemetry-sim/actions/workflows/tests.yml/badge.svg)](https://github.com/mjprall/factory-telemetry-sim/actions/workflows/tests.yml)
 
 A small, fully static web app that simulates a factory line and does live
 anomaly detection on its sensor data. It's written in Python and runs in the
 browser through [PyScript](https://pyscript.net) (Pyodide/WebAssembly). There's
 no backend: any static host can serve it.
-
-**Live demo:** <https://mjprall.github.io/factory-telemetry-sim/>
 
 ![Dashboard with injected faults](screenshots/dashboard-faults.png)
 
