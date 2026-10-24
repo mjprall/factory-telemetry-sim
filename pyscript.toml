@@ -1,0 +1,7 @@
+# PyScript config. Paths are relative so the site works from any sub-path
+# (e.g. https://mjprall.github.io/factory-telemetry-sim/).
+name = "Factory Telemetry Simulator"
+
+[files]
+"./sim.py" = ""
+"./charts.py" = ""

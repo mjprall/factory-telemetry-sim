@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Factory Telemetry Simulator · Matthew Prall</title>
+  <meta name="description" content="Live factory-line telemetry with rolling z-score anomaly detection, written in Python and running in your browser via PyScript.">
+  <!-- Optional: set to your GitHub repo URL to show a "GitHub" link in the footer. -->
+  <meta name="repo-url" content="https://github.com/mjprall/factory-telemetry-sim">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230f1720'/><path d='M4 20h5l3-9 4 14 4-10 2 5h6' fill='none' stroke='%23f5a524' stroke-width='2.5' stroke-linejoin='round'/></svg>">
+  <!-- PyScript pinned to an exact release (Pyodide runtime is loaded by it). -->
+  <link rel="stylesheet" href="https://pyscript.net/releases/2026.7.3/core.css">
+  <script type="module" src="https://pyscript.net/releases/2026.7.3/core.js"></script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="loading" class="loading" role="status" aria-live="polite">
+    <div class="loading-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <h2>Booting Python in your browser…</h2>
+      <p>Downloading the Pyodide runtime (a few MB, cached after the first visit). The simulator itself is plain Python: <code>sim.py</code>.</p>
+      <p id="loading-slow" class="muted hidden">Still loading — slow networks can take 20–30&nbsp;s on first visit.</p>
+      <noscript><p class="error">This demo needs JavaScript enabled to run Python via WebAssembly.</p></noscript>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" class="logo" aria-hidden="true"><path d="M3 20h6l3-9 4 14 4-10 2 5h7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <div>
+        <h1>Factory Telemetry Simulator</h1>
+        <p class="subtitle">Line 1 · simulated OT sensors → reorder buffer → rolling z-score detection, all in Python</p>
+      </div>
+    </div>
+    <div class="clock-wrap">
+      <span class="label">Shift clock</span>
+      <span id="clock" class="clock">06:00:00</span>
+      <span id="run-state" class="pill pill-ok">RUNNING</span>
+    </div>
+  </header>
+
+  <section class="controls panel" aria-label="Simulation controls">
+    <div class="control-group">
+      <button id="btn-toggle" class="btn btn-primary" type="button" disabled>Pause</button>
+      <button id="btn-reset" class="btn" type="button" disabled>Reset</button>
+    </div>
+    <label class="control">
+      <span>Speed</span>
+      <select id="speed" disabled>
+        <option value="0.5">0.5×</option>
+        <option value="1">1×</option>
+        <option value="2" selected>2×</option>
+        <option value="5">5×</option>
+        <option value="10">10×</option>
+      </select>
+    </label>
+    <label class="control slider">
+      <span>Z threshold <output id="z-out">3.0</output></span>
+      <input id="z" type="range" min="1.5" max="6" step="0.1" value="3.0" disabled>
+    </label>
+    <label class="control slider">
+      <span>Window <output id="win-out">60</output> samples</span>
+      <input id="window" type="range" min="20" max="180" step="5" value="60" disabled>
+    </label>
+    <label class="control slider">
+      <span>Debounce <output id="deb-out">3</output> samples</span>
+      <input id="debounce" type="range" min="1" max="10" step="1" value="3" disabled>
+    </label>
+  </section>
+
+  <section class="faults panel" aria-label="Fault injection">
+    <div class="faults-head">
+      <h2>Inject a fault</h2>
+      <label class="control inline">
+        <span>Target</span>
+        <select id="target" disabled></select>
+      </label>
+    </div>
+    <div class="fault-buttons">
+      <button class="btn fault-btn" data-fault="bearing_wear" type="button" disabled title="Vibration ramps up and accelerates; slight heat">⚙️ Bearing wear</button>
+      <button class="btn fault-btn" data-fault="overheat" type="button" disabled title="Temperature drifts upward until cleared">🔥 Overheating</button>
+      <button class="btn fault-btn" data-fault="dropout" type="button" disabled title="Gateway stops sending for 15 s → STALE">📡 Sensor dropout</button>
+      <button class="btn fault-btn" data-fault="spike" type="button" disabled title="6 s burst of large noise on every signal">⚡ Spike / noise burst</button>
+      <button class="btn fault-btn" data-fault="network_delay" type="button" disabled title="40 s of random latency → out-of-order frames, fixed by the reorder buffer">🐢 Network delay</button>
+      <button id="btn-clear" class="btn btn-ghost" type="button" disabled title="Clear faults and re-learn baselines">🔧 Maintenance (clear)</button>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section id="machines" class="machines" aria-label="Machines"></section>
+
+    <aside class="side">
+      <section class="panel">
+        <h2>Pipeline</h2>
+        <dl class="stats">
+          <div><dt>Ticks</dt><dd id="st-ticks">0</dd></div>
+          <div><dt>Frames sent</dt><dd id="st-sent">0</dd></div>
+          <div><dt>Out-of-order</dt><dd id="st-ooo">0</dd></div>
+          <div><dt>Late / dropped</dt><dd id="st-late">0</dd></div>
+          <div><dt>Reorder depth</dt><dd id="st-depth">0</dd></div>
+          <div><dt>Active alerts</dt><dd id="st-alerts">0</dd></div>
+        </dl>
+      </section>
+      <section class="panel log-panel">
+        <div class="log-head">
+          <h2>Event log</h2>
+          <button id="btn-clear-log" class="btn btn-small btn-ghost" type="button" disabled>Clear</button>
+        </div>
+        <ol id="log" class="log" aria-live="polite"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <section class="panel how">
+    <h2>How it works</h2>
+    <ol>
+      <li><strong>Simulate.</strong> Each machine emits one frame per tick: nominal value + duty cycle + mean-reverting drift + Gaussian noise + any injected fault.</li>
+      <li><strong>Transport.</strong> A network model can add jitter, so frames arrive out of order. A per-machine <em>reorder buffer</em> releases them by sequence number and gives up on gaps after 5 s.</li>
+      <li><strong>Detect.</strong> Every signal keeps an O(1) rolling mean/std. A sample's z-score is computed against the baseline <em>before</em> it is added, and anomalous samples are not learned. Hard engineering limits back it up.</li>
+      <li><strong>Debounce.</strong> Alerts need N consecutive samples to raise and 8 to clear, with a hysteresis band (clear below 0.75·z), so they don't flap. No data for 6 s → <span class="tag tag-stale">STALE</span>.</li>
+    </ol>
+    <p class="muted">The shaded band on each chart is the learned mean ± z·σ envelope; dots mark samples while a signal is in WARN/ALARM.</p>
+  </section>
+
+  <footer class="footer">
+    <span>Built with Python + PyScript by Matthew Prall</span>
+    <span class="sep">·</span>
+    <a href="#" id="view-source">View source &amp; README</a>
+    <a href="#" id="repo-link" class="hidden" target="_blank" rel="noopener"><span class="sep">·</span> GitHub</a>
+  </footer>
+
+  <dialog id="source-dialog" class="source-dialog">
+    <div class="dialog-head">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-file="sim.py" type="button">sim.py</button>
+        <button class="tab" data-file="charts.py" type="button">charts.py</button>
+        <button class="tab" data-file="app.py" type="button">app.py</button>
+        <button class="tab" data-file="README.md" type="button">README.md</button>
+      </div>
+      <button id="close-source" class="btn btn-small" type="button" aria-label="Close">✕</button>
+    </div>
+    <pre id="source-code" class="source-code">Loading…</pre>
+  </dialog>
+
+  <script>
+    // Tiny non-Python helper: tell slow-network visitors we're still working.
+    setTimeout(function () {
+      var el = document.getElementById("loading-slow");
+      if (el && !document.body.classList.contains("py-ready")) el.classList.remove("hidden");
+    }, 12000);
+  </script>
+  <script type="py" src="./app.py" config="./pyscript.toml"></script>
+</body>
+</html>
